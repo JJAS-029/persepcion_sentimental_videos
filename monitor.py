@@ -2,6 +2,7 @@
 
 - Sin argumentos: levanta la app (Streamlit) y abre el navegador.
 - Con --colector: corre el colector (la app se relanza a sí misma así para cada video).
+- Con --facebook-login: abre Edge para iniciar sesión en Facebook.
 """
 import os
 import socket
@@ -24,6 +25,11 @@ def main():
 
         sys.argv = [sys.argv[0], *sys.argv[2:]]
         colector.main()
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "--facebook-login":
+        import facebook
+
+        facebook.iniciar_sesion()
         return
 
     if puerto_ocupado():  # ya hay una ventana abierta: solo mostrar la app

@@ -22,3 +22,10 @@ def comando_colector(*args: str) -> list[str]:
     if CONGELADO:
         return [sys.executable, "--colector", *args]
     return [sys.executable, str(Path(__file__).parent / "colector.py"), *args]
+
+
+def comando_login_facebook() -> list[str]:
+    """Comando que abre Edge para iniciar sesión en Facebook."""
+    if CONGELADO:
+        return [sys.executable, "--facebook-login"]
+    return [sys.executable, str(Path(__file__).parent / "facebook.py")]

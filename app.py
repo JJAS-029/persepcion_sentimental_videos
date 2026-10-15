@@ -12,12 +12,14 @@ from datetime import datetime
 import pandas as pd
 import plotly.express as px
 import psutil
+import requests
 import streamlit as st
 
 import db
+import facebook
 import informe
-from fuentes import extraer_video_id
-from rutas import LOGS, comando_colector
+from fuentes import extraer_video_id, link_video, plataforma
+from rutas import LOGS, comando_colector, comando_login_facebook
 
 TZ = "America/Mexico_City"
 COLORES = {"Positivo": "#2a78d6", "Neutro": "#9b9a94", "Negativo": "#e34948"}
@@ -103,43 +105,71 @@ def palabras_top(textos: pd.Series, n: int = 15) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------- interfaz
-st.title("📊 Monitor de percepción en YouTube")
-st.caption("Pega el link de una transmisión en vivo (o ya terminada con chat) y presiona **Iniciar**. "
+st.title("📊 Monitor de percepción")
+st.caption("Pega el link de un video de **YouTube** o **Facebook** (en vivo o ya publicado) y presiona **Iniciar**. "
            "Cada comentario se clasifica como positivo, neutro o negativo, con su emoción.")
 
+
+def conectar_facebook() -> None:
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    subprocess.Popen(comando_login_facebook(), creationflags=flags)
+    st.toast("Se abrió una ventana de Edge: inicia sesión en Facebook. Se cerrará sola al terminar.", icon="📘")
+
+
 with st.form("nuevo", clear_on_submit=True, border=True):
-    c1, c2 = st.columns([5, 1], vertical_alignment="bottom")
-    link = c1.text_input("Link del video de YouTube", placeholder="https://www.youtube.com/watch?v=...")
-    enviar = c2.form_submit_button("▶ Iniciar", type="primary", width="stretch")
-if enviar and link:
-    try:
-        vid = extraer_video_id(link.strip())
-    except ValueError:
-        st.error("Ese link no parece de un video de YouTube. Copia la dirección completa del video.")
-    else:
-        actual = sesiones().set_index("video_id")
+    links = st.text_area("Links de los videos — uno por línea, YouTube y Facebook mezclados", height=110,
+                         placeholder="https://www.youtube.com/watch?v=...\nhttps://www.facebook.com/.../videos/...")
+    enviar = st.form_submit_button("▶ Iniciar", type="primary")
+fb1, fb2 = st.columns([5, 1], vertical_alignment="center")
+if facebook.sesion_conectada():
+    fb1.caption("📘 Facebook: cuenta conectada ✅")
+    fb2.button("Cambiar cuenta", on_click=conectar_facebook, width="stretch")
+else:
+    fb1.caption("📘 Facebook: **sin cuenta conectada**. Para analizar videos de Facebook, conecta una cuenta "
+                "(de preferencia institucional) una sola vez.")
+    fb2.button("Conectar Facebook", on_click=conectar_facebook, width="stretch")
+
+if enviar and links.strip():
+    actual = sesiones().set_index("video_id")
+    iniciados, avisos = [], []
+    for linea in dict.fromkeys(l.strip() for l in links.splitlines() if l.strip()):
+        try:
+            vid = extraer_video_id(linea)
+        except (ValueError, requests.RequestException):
+            avisos.append(f"No parece un video de YouTube o Facebook: {linea}")
+            continue
         if vid in actual.index and actual.loc[vid, "estado"] in ("iniciando", "recolectando"):
-            st.warning("Ese video ya se está analizando.")
-        else:
+            avisos.append(f"Ya se está analizando: {linea}")
+        elif vid.startswith("fb_") and not facebook.sesion_conectada():
+            avisos.append(f"Conecta una cuenta de Facebook antes de analizar: {linea}")
+        elif vid not in iniciados:
             iniciar(vid)
-            st.session_state["video"] = vid
-            st.toast("Recolección iniciada. Los primeros resultados tardan ~1 minuto.", icon="✅")
+            iniciados.append(vid)
+    for a in avisos:
+        st.warning(a)
+    if iniciados:
+        st.session_state["video"] = iniciados[0]
+        st.toast(f"Recolección iniciada en {len(iniciados)} video(s). Los primeros resultados tardan ~1 minuto. "
+                 "Los videos ya terminados se leen completos; los que están en vivo se siguen monitoreando.", icon="✅")
 
 ses = sesiones()
 if ses.empty:
     st.info("Aún no hay videos analizados. Pega un link arriba para empezar.")
     st.stop()
 
-etiquetas = {r.video_id: f"{ESTADOS.get(r.estado, r.estado)} · {r.titulo or r.video_id}" for r in ses.itertuples()}
+ICONO_PLATAFORMA = {"YouTube": "▶️", "Facebook": "📘"}
+etiquetas = {r.video_id: f"{ESTADOS.get(r.estado, r.estado)} · {ICONO_PLATAFORMA[plataforma(r.video_id)]} "
+                         f"{r.titulo or r.video_id}" for r in ses.itertuples()}
 ids = list(etiquetas)
 previo = st.session_state.get("video")
 video = st.selectbox("Video", ids, index=ids.index(previo) if previo in ids else 0, format_func=etiquetas.get)
 st.session_state["video"] = video
 
 c1, c2, c3, c4 = st.columns([1, 1, 2, 1])
-desde = c1.time_input("Desde (hora)", value=None, step=60, key=f"desde_{video}",
-                      help="Vacío = desde el inicio. Úsalo para analizar solo una participación.")
-hasta = c2.time_input("Hasta (hora)", value=None, step=60, key=f"hasta_{video}",
+desde = c1.time_input("Desde (hora)", value=None, step=60, key="desde",
+                      help="Vacío = desde el inicio. Úsalo para analizar solo una participación. "
+                           "Aplica a las gráficas, al informe y al CSV.")
+hasta = c2.time_input("Hasta (hora)", value=None, step=60, key="hasta",
                       help="Vacío = hasta el último comentario.")
 ventana = c3.select_slider("Agrupar gráficas por", options=["30s", "1min", "2min", "5min", "10min"], value="1min")
 refresco = c4.number_input("Actualizar cada (s)", 2, 60, 5)
@@ -151,7 +181,7 @@ def panel():
     corriendo = s["estado"] in ("iniciando", "recolectando")
     e1, e2 = st.columns([5, 1], vertical_alignment="center")
     e1.markdown(f"**{ESTADOS.get(s['estado'], s['estado'])}** · {s['modo'] or ''} · {s['detalle'] or ''}  \n"
-                f"[Abrir video en YouTube](https://www.youtube.com/watch?v={video})")
+                f"[Abrir video en {plataforma(video)}]({link_video(video)})")
     if corriendo and e2.button("⏹ Detener", width="stretch"):
         detener(s["pid"])
         db.sesion(conexion(), video, estado="detenido", detalle="Detenido desde la app")
@@ -226,38 +256,53 @@ panel()
 st.divider()
 st.header("📝 Informe")
 st.caption("Usa **Desde / Hasta** (arriba) para limitar el informe y el CSV a una participación. "
-           "Se eligen los comentarios positivos y negativos más claros, sin repetidos.")
-s = ses.set_index("video_id").loc[video]
-with st.form(f"informe_{video}", border=True):
-    c1, c2, c3 = st.columns([2, 1, 3])
-    pagina = c1.text_input("Página", value=s.get("canal") or "")
-    plataforma = c2.text_input("Plataforma", value="YouTube")
-    link_inf = c3.text_input("Link (puedes pegar uno acortado)", value=f"https://www.youtube.com/watch?v={video}")
-    c1, c2, c3 = st.columns(3)
-    por_tipo = c1.number_input("Comentarios por tipo", 1, 200, 10)
-    neutros = c2.checkbox("Incluir neutros (⚪)")
-    con_resumen = c3.checkbox("Incluir resumen con porcentajes")
-    generar = st.form_submit_button("Generar informe", type="primary")
+           "Puedes combinar varios videos, por ejemplo la misma transmisión en YouTube y en Facebook: "
+           "sale un bloque por cada uno. Se eligen los comentarios positivos y negativos más claros, sin repetidos.")
+ses_idx = ses.set_index("video_id")
+elegidos = st.multiselect("Videos a incluir", ids, default=[video], format_func=etiquetas.get)
+if elegidos:
+    base = pd.DataFrame({
+        "video_id": elegidos,
+        "Página": [ses_idx.loc[v, "canal"] or "" for v in elegidos],
+        "Plataforma": [plataforma(v) for v in elegidos],
+        "Link": [link_video(v) for v in elegidos],
+    })
+    with st.form("informe", border=True):
+        st.caption("Puedes corregir el nombre de la página y pegar links acortados directamente en la tabla.")
+        tabla = st.data_editor(base, hide_index=True, width="stretch", column_config={"video_id": None},
+                               key=f"tabla_{'_'.join(elegidos)}")
+        c1, c2, c3 = st.columns(3)
+        por_tipo = c1.number_input("Comentarios por tipo (en cada video)", 1, 200, 10)
+        neutros = c2.checkbox("Incluir neutros (⚪)")
+        con_resumen = c3.checkbox("Incluir resumen con porcentajes")
+        generar = st.form_submit_button("Generar informe", type="primary")
 
-datos = cargar(video, desde, hasta)
-if generar:
-    if datos.empty:
-        st.warning("No hay comentarios en el periodo elegido.")
-    else:
-        sel = informe.seleccionar(datos, por_tipo, neutros)
-        st.session_state[f"texto_informe_{video}"] = informe.texto(sel, pagina, plataforma, link_inf,
-                                                    informe.resumen(datos) if con_resumen else None)
-if st.session_state.get(f"texto_informe_{video}"):
-    st.code(st.session_state[f"texto_informe_{video}"], language=None, wrap_lines=True)  # tiene botón de copiar
-    sello = datetime.now().strftime("%Y%m%d_%H%M")
-    d1, d2, _ = st.columns([1, 1, 3])
-    d1.download_button("⬇ Informe en Word", informe.word(st.session_state[f"texto_informe_{video}"]),
-                       file_name=f"informe_{video}_{sello}.docx", width="stretch",
-                       mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-    d2.download_button("⬇ Informe en texto", st.session_state[f"texto_informe_{video}"].encode("utf-8"),
-                       file_name=f"informe_{video}_{sello}.txt", mime="text/plain", width="stretch")
+    datos = {v: cargar(v, desde, hasta) for v in elegidos}
+    if generar:
+        bloques, vacios = [], []
+        for fila in tabla.to_dict("records"):
+            d = datos[fila["video_id"]]
+            if d.empty:
+                vacios.append(etiquetas[fila["video_id"]])
+                continue
+            sel = informe.seleccionar(d, por_tipo, neutros)
+            bloques.append(informe.bloque(sel, fila["Página"], fila["Plataforma"], fila["Link"],
+                                          informe.resumen(d) if con_resumen else None))
+        st.session_state["texto_informe"] = informe.unir(bloques) if bloques else None
+        if vacios:
+            st.warning("Sin comentarios en el periodo elegido: " + "; ".join(vacios))
+    if st.session_state.get("texto_informe"):
+        st.code(st.session_state["texto_informe"], language=None, wrap_lines=True)  # tiene botón de copiar
+        sello = datetime.now().strftime("%Y%m%d_%H%M")
+        d1, d2, _ = st.columns([1, 1, 3])
+        d1.download_button("⬇ Informe en Word", informe.word(st.session_state["texto_informe"]),
+                           file_name=f"informe_{sello}.docx", width="stretch",
+                           mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        d2.download_button("⬇ Informe en texto", st.session_state["texto_informe"].encode("utf-8"),
+                           file_name=f"informe_{sello}.txt", mime="text/plain", width="stretch")
 
-if not datos.empty:
-    st.download_button(f"⬇ Todos los comentarios del periodo ({len(datos):,}) en CSV para Excel",
-                       datos.drop(columns=["hora"]).to_csv(index=False).encode("utf-8-sig"),
-                       file_name=f"comentarios_{video}.csv", mime="text/csv")
+    todos = pd.concat([d.assign(plataforma=plataforma(v)) for v, d in datos.items() if not d.empty] or [pd.DataFrame()])
+    if not todos.empty:
+        st.download_button(f"⬇ Todos los comentarios de estos videos en el periodo ({len(todos):,}) en CSV para Excel",
+                           todos.drop(columns=["hora"]).to_csv(index=False).encode("utf-8-sig"),
+                           file_name=f"comentarios_{datetime.now():%Y%m%d_%H%M}.csv", mime="text/csv")

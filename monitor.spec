@@ -3,16 +3,17 @@
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 datas = [("app.py", "."), ("modelos", "modelos")]
-for paquete in ("streamlit", "plotly", "emoji", "docx", "tzdata", "certifi", "altair"):
+for paquete in ("streamlit", "plotly", "emoji", "docx", "tzdata", "certifi", "altair", "playwright"):
     datas += collect_data_files(paquete)
 # Paquetes que verifican versiones de sus dependencias vía importlib.metadata
 for paquete in ("streamlit", "transformers", "tokenizers", "huggingface-hub", "safetensors", "torch",
                 "accelerate", "datasets", "tqdm", "regex", "requests", "packaging", "filelock", "numpy",
-                "pyyaml", "pysentimiento", "pandas", "pyarrow", "plotly", "psutil"):
+                "pyyaml", "pysentimiento", "pandas", "pyarrow", "plotly", "psutil", "playwright"):
     datas += copy_metadata(paquete)
 
 # app.py lo carga Streamlit en tiempo de ejecución: sus importaciones no se detectan solas
-hiddenimports = ["app", "db", "fuentes", "informe", "rutas", "colector", "docx", "psutil", "plotly.express"]
+hiddenimports = ["app", "db", "fuentes", "informe", "rutas", "colector", "facebook", "docx", "psutil",
+                 "plotly.express", "playwright.sync_api"]
 hiddenimports += collect_submodules("streamlit")
 hiddenimports += collect_submodules("transformers.models.roberta")
 hiddenimports += collect_submodules("pysentimiento", filter=lambda m: "baselines" not in m)

@@ -21,7 +21,23 @@ from datetime import datetime, timezone
 import requests
 
 
+def plataforma(video_id: str) -> str:
+    return "Facebook" if video_id.startswith("fb_") else "YouTube"
+
+
+def link_video(video_id: str) -> str:
+    if video_id.startswith("fb_"):
+        return f"https://www.facebook.com/watch/?v={video_id.removeprefix('fb_')}"
+    return f"https://www.youtube.com/watch?v={video_id}"
+
+
 def extraer_video_id(url_o_id: str) -> str:
+    """ID de YouTube (11 caracteres) o "fb_<número>" para videos de Facebook."""
+    if re.search(r"fb\.watch/", url_o_id):  # link corto de Facebook: seguir la redirección
+        url_o_id = requests.get(url_o_id, headers={"User-Agent": _UA}, timeout=20).url
+    m = re.search(r"facebook\.com(?:/[^?#]*?)?(?:/videos/(?:[\w.-]+/)?|/reel/|[?&]v=)(\d{6,})", url_o_id)
+    if m:
+        return f"fb_{m.group(1)}"
     patrones = [r"[?&]v=([\w-]{11})", r"youtu\.be/([\w-]{11})", r"/(?:live|shorts|embed)/([\w-]{11})"]
     for p in patrones:
         m = re.search(p, url_o_id)

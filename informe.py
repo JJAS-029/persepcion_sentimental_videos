@@ -1,4 +1,4 @@
-"""Informe de comentarios en el formato solicitado:
+"""Informe de comentarios en el formato solicitado (un bloque por video / plataforma):
 
     <Página>
      <Plataforma> <link>
@@ -29,12 +29,16 @@ def _autor(nombre) -> str:
     return re.sub(r"^@", "", nombre or "").strip()
 
 
-def texto(sel: pd.DataFrame, pagina: str, plataforma: str, link: str, resumen: str | None = None) -> str:
+def bloque(sel: pd.DataFrame, pagina: str, plataforma: str, link: str, resumen: str | None = None) -> str:
     lineas = [pagina.strip(), f" {plataforma.strip()} {link.strip()}".rstrip(), ""]
     if resumen:
         lineas += [resumen, ""]
     lineas += [f"{ICONOS[r.sentimiento]}{_autor(r.autor)} {r.mensaje.strip()}" for r in sel.itertuples()]
     return "\n".join(lineas)
+
+
+def unir(bloques: list[str]) -> str:
+    return "\n\n\n".join(bloques)
 
 
 def resumen(df: pd.DataFrame) -> str:
@@ -51,10 +55,12 @@ def word(contenido: str) -> bytes:
     doc = Document()
     estilo = doc.styles["Normal"]
     estilo.font.name, estilo.font.size = "Calibri", Pt(11)
-    primera, *resto = contenido.split("\n")
-    doc.add_paragraph().add_run(primera).bold = True
-    for linea in resto:
-        doc.add_paragraph(linea)
+    lineas = contenido.split("\n")
+    for i, linea in enumerate(lineas):
+        # El nombre de la página (inicio de cada bloque) va en negritas
+        es_titulo = (i == 0 or not lineas[i - 1].strip()) and i + 1 < len(lineas) and lineas[i + 1].startswith(" ")
+        p = doc.add_paragraph()
+        p.add_run(linea).bold = es_titulo
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()

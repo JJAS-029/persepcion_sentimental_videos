@@ -7,4 +7,5 @@ plotly
 pandas
 requests
 psutil
+playwright
 tzdata

@@ -1,9 +1,9 @@
-# Monitor de percepción en YouTube
+# Monitor de percepción en YouTube y Facebook
 
-Analiza el chat de una transmisión de YouTube (en vivo o ya terminada) y clasifica cada
-comentario por **sentimiento** (positivo / neutro / negativo), **emoción** y
+Analiza los comentarios de videos de **YouTube** (chat en vivo o su repetición) y **Facebook**
+(en vivo o publicados) y clasifica cada comentario por **sentimiento** (positivo / neutro / negativo), **emoción** y
 **discurso de odio / agresividad**, con modelos de [pysentimiento](https://github.com/pysentimiento/pysentimiento)
-entrenados con texto de redes sociales en español. Todo corre en el equipo: los comentarios no se envían a ningún servicio externo.
+entrenados con texto de redes sociales en español. El análisis corre en el equipo: los comentarios no se envían a ningún servicio externo.
 
 ## Para usuarios
 
@@ -19,9 +19,19 @@ Crea el acceso **"Monitor de percepcion"** en el escritorio y en el menú Inicio
 ### Uso
 
 1. Abre **"Monitor de percepcion"**. Se abre una ventana negra (**no cerrarla**) y el navegador con la aplicación.
-2. Pega el link del video de YouTube y presiona **▶ Iniciar**.
+2. Pega los links de los videos, **uno por línea** (YouTube y Facebook mezclados; por ejemplo la
+   misma transmisión en ambas plataformas) y presiona **▶ Iniciar**.
 3. En ~1 minuto empiezan a aparecer resultados; la página se actualiza sola.
-4. Para terminar, presiona **⏹ Detener**.
+   - Videos **ya terminados**: se leen todos los comentarios de una vez.
+   - Videos **en vivo**: se siguen monitoreando (YouTube al instante, Facebook cada minuto) hasta que terminen.
+4. Para terminar antes, presiona **⏹ Detener**.
+
+#### Facebook: conectar una cuenta (una sola vez)
+
+Facebook solo muestra unos pocos comentarios sin sesión. Presiona **Conectar Facebook**: se abre una
+ventana de Edge; inicia sesión (y completa la verificación que pida Facebook). La ventana se cierra sola
+cuando la cuenta ya puede ver videos. Usar **una cuenta institucional**, no personal: la lectura
+automatizada va contra las reglas de Facebook y la cuenta podría ser restringida.
 
 Los videos analizados quedan guardados y se pueden volver a consultar desde el selector **Video**.
 
@@ -29,10 +39,11 @@ Los videos analizados quedan guardados y se pueden volver a consultar desde el s
 
 - **Desde / Hasta (hora)**: limita gráficas, informe y CSV a un periodo, por ejemplo solo la
   participación de un funcionario. Se puede ajustar en cualquier momento, aun con la recolección en curso.
-- **📝 Informe**: genera el texto en el formato solicitado (página, plataforma y link; luego
-  🟢 comentarios positivos y 🔴 negativos con el nombre de quien comenta). Se puede copiar o descargar en Word.
-  Se eligen los comentarios más claros de cada tipo, sin repetidos.
-- **⬇ CSV**: todos los comentarios del periodo con su clasificación (abre en Excel).
+- **📝 Informe**: elige uno o varios videos (p. ej. YouTube + Facebook del mismo evento). Sale un bloque
+  por video en el formato solicitado (página, plataforma y link; luego 🟢 comentarios positivos y 🔴 negativos
+  con el nombre de quien comenta). Página y link se pueden editar (p. ej. pegar un link acortado).
+  Se puede copiar o descargar en Word. Se eligen los comentarios más claros de cada tipo, sin repetidos.
+- **⬇ CSV**: todos los comentarios de los videos elegidos en el periodo, con plataforma y clasificación (abre en Excel).
 
 ### ¿Qué significa cada indicador?
 
@@ -66,6 +77,8 @@ app.py (Streamlit) ──lanza──► colector.py ──► data/comentarios.d
   - `pytchat` / `chatdl`: en pruebas de oct 2026, pytchat solo recibía el chat destacado y chat-downloader no funcionaba.
 - `db.py`: tablas `mensajes` y `sesiones` (estado de cada recolección). Logs en `data/logs/`.
 
+- `facebook.py`: comentarios de Facebook con Playwright + Edge del sistema, usando un perfil propio con sesión
+  iniciada (`--facebook-login`). Lee los datos GraphQL que recibe la página, no el texto en pantalla.
 - `informe.py`: selección de comentarios y formato del informe (texto / Word).
 - `rutas.py`: rutas para desarrollo y para el .exe (datos en `%LOCALAPPDATA%\MonitorPercepcion`).
 

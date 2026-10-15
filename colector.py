@@ -1,4 +1,4 @@
-"""Colector: lee el chat en vivo, clasifica sentimiento/emoción/odio y guarda en SQLite.
+"""Colector: lee el chat de YouTube o los comentarios de Facebook, clasifica sentimiento/emoción/odio y guarda en SQLite.
 
 Uso:
     python colector.py "https://www.youtube.com/watch?v=XXXXXXXXXXX"
@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import psutil
 
 import db
+import facebook
 from fuentes import FUENTES, extraer_video_id, info_video
 from rutas import MODELOS
 
@@ -79,7 +80,7 @@ def productor(gen, cola: queue.Queue, fin: threading.Event, errores: list):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("video", help="URL o ID del video de YouTube")
+    ap.add_argument("video", help="URL o ID del video (YouTube o Facebook)")
     ap.add_argument("--fuente", choices=FUENTES, default="web")
     ap.add_argument("--intervalo", type=float, default=2.0, help="segundos de espera cuando no hay mensajes nuevos")
     ap.add_argument("--lote-max", type=int, default=256)
@@ -91,20 +92,29 @@ def main():
     conn = db.connect()
     db.sesion(conn, video_id, pid=os.getpid(), inicio=datetime.now(timezone.utc).isoformat(),
               estado="iniciando", detalle="Consultando el video...")
-    try:
-        info = info_video(video_id)
-        db.sesion(conn, video_id, titulo=info["titulo"], canal=info["canal"],
-                  modo="en vivo" if info["en_vivo"] else ("repetición" if info["repeticion"] else "sin chat"),
-                  detalle="Cargando modelos de lenguaje...")
-    except Exception as e:  # noqa: BLE001 - el título es informativo; seguimos sin él
-        print(f"[info] no se pudo consultar el video: {e!r}")
+    if video_id.startswith("fb_"):
+        def guardar_info(titulo, canal, en_vivo):  # se llama desde el hilo del navegador
+            db.sesion(db.connect(), video_id, titulo=titulo, canal=canal,
+                      modo="en vivo" if en_vivo else "publicado")
+
+        db.sesion(conn, video_id, detalle="Cargando modelos de lenguaje...")
+        generador = facebook.fuente_facebook(video_id, guardar_info)
+    else:
+        try:
+            info = info_video(video_id)
+            db.sesion(conn, video_id, titulo=info["titulo"], canal=info["canal"],
+                      modo="en vivo" if info["en_vivo"] else ("repetición" if info["repeticion"] else "sin chat"),
+                      detalle="Cargando modelos de lenguaje...")
+        except Exception as e:  # noqa: BLE001 - el título es informativo; seguimos sin él
+            print(f"[info] no se pudo consultar el video: {e!r}")
+        generador = FUENTES[args.fuente](video_id)
     clasificar = Clasificador(odio=not args.sin_odio)
 
     cola: queue.Queue = queue.Queue()
     fin = threading.Event()
     errores: list[str] = []
-    threading.Thread(target=productor, args=(FUENTES[args.fuente](video_id), cola, fin, errores), daemon=True).start()
-    print(f"Escuchando chat de {video_id} vía {args.fuente}. Ctrl+C para detener.")
+    threading.Thread(target=productor, args=(generador, cola, fin, errores), daemon=True).start()
+    print(f"Escuchando comentarios de {video_id}. Ctrl+C para detener.")
     db.sesion(conn, video_id, estado="recolectando", detalle="Esperando mensajes...")
 
     total = 0
@@ -124,7 +134,8 @@ def main():
             filas = [{**m, **r, "video_id": video_id} for m, r in zip(lote, resultados)]
             total += db.insertar(conn, filas)
             pendientes = cola.qsize()
-            db.sesion(conn, video_id, recibidos=total,
+            guardados = conn.execute("SELECT COUNT(*) FROM mensajes WHERE video_id = ?", (video_id,)).fetchone()[0]
+            db.sesion(conn, video_id, recibidos=guardados,
                       detalle=f"{pendientes:,} mensajes por analizar" if pendientes else "Al corriente")
             neg = sum(r["sentimiento"] == "NEG" for r in resultados)
             print(f"+{len(lote)} msgs (NEG {neg}) | total {total} | en cola {pendientes}")
