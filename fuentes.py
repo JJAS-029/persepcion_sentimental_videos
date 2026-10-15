@@ -33,6 +33,8 @@ def link_video(video_id: str) -> str:
 
 def extraer_video_id(url_o_id: str) -> str:
     """ID de YouTube (11 caracteres) o "fb_<número>" para videos de Facebook."""
+    if re.fullmatch(r"fb_\d{6,}", url_o_id):  # ya es un ID interno (así lo pasa la app al colector)
+        return url_o_id
     if re.search(r"fb\.watch/", url_o_id):  # link corto de Facebook: seguir la redirección
         url_o_id = requests.get(url_o_id, headers={"User-Agent": _UA}, timeout=20).url
     m = re.search(r"facebook\.com(?:/[^?#]*?)?(?:/videos/(?:[\w.-]+/)?|/reel/|[?&]v=)(\d{6,})", url_o_id)

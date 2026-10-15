@@ -25,6 +25,7 @@ TZ = "America/Mexico_City"
 COLORES = {"Positivo": "#2a78d6", "Neutro": "#9b9a94", "Negativo": "#e34948"}
 ORDEN = ["Positivo", "Neutro", "Negativo"]
 SENT = {"POS": "Positivo", "NEU": "Neutro", "NEG": "Negativo"}
+SENT_ICONO = {"Positivo": "🟢 Positivo", "Neutro": "⚪ Neutro", "Negativo": "🔴 Negativo"}
 EMO = {"joy": "Alegría", "anger": "Enojo", "sadness": "Tristeza", "fear": "Miedo",
        "surprise": "Sorpresa", "disgust": "Asco", "others": "Otra / ninguna"}
 ESTADOS = {"iniciando": "⏳ Iniciando", "recolectando": "🔴 Recolectando", "terminado": "✅ Terminado",
@@ -277,16 +278,19 @@ def panel():
     fig4.update_traces(marker_color="#2a78d6")
     b.plotly_chart(fig4, width="stretch")
 
-    cols = ["hora", "Video", "autor", "mensaje", "Sentimiento", "Emoción"] if len(partes) > 1 else \
-           ["hora", "autor", "mensaje", "Sentimiento", "Emoción"]
+    cols = ["hora", "Sentimiento", "Video", "autor", "mensaje", "Emoción"] if len(partes) > 1 else \
+           ["hora", "Sentimiento", "autor", "mensaje", "Emoción"]
+
+    def para_tabla(d: pd.DataFrame) -> pd.DataFrame:
+        return d[cols].assign(hora=d["hora"].dt.strftime("%H:%M:%S"),
+                              Sentimiento=d["Sentimiento"].map(SENT_ICONO))
+
     a, b = st.columns(2)
     a.subheader("Últimos comentarios")
-    a.dataframe(df[cols].iloc[::-1].head(50).assign(hora=lambda d: d["hora"].dt.strftime("%H:%M:%S")),
-                hide_index=True, width="stretch", height=400)
+    a.dataframe(para_tabla(df.iloc[::-1].head(50)), hide_index=True, width="stretch", height=400)
     b.subheader("Más negativos / agresivos")
     criticos = df.assign(score=df["p_neg"] + df["odio"] + df["agresivo"]).sort_values("score", ascending=False)
-    b.dataframe(criticos[cols].head(50).assign(hora=lambda d: d["hora"].dt.strftime("%H:%M:%S")),
-                hide_index=True, width="stretch", height=400)
+    b.dataframe(para_tabla(criticos.head(50)), hide_index=True, width="stretch", height=400)
 
 
 panel()
