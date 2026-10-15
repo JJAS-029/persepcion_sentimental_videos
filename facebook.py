@@ -23,7 +23,7 @@ from rutas import DATOS
 
 PERFIL = DATOS / "perfil_facebook"
 MARCA_SESION = DATOS / "facebook_conectado.txt"
-ESPERA_EN_VIVO = 60          # segundos entre revisiones mientras el video está en vivo
+ESPERA_EN_VIVO = 120         # segundos entre revisiones en vivo (más seguido aumenta el riesgo de bloqueo)
 MAX_PAGINAS = 200            # tope de clics en "Ver más comentarios" por pasada
 
 
@@ -159,7 +159,9 @@ def _pasada(ctx, video_id: str, vistos: set, al_obtener_info):
         html = pg.content()
         en_vivo = "/live" in pg.url or '"is_live_streaming":true' in html or '"broadcast_status":"LIVE"' in html
         if al_obtener_info:
-            al_obtener_info(en_vivo)
+            # publish_time = inicio de la transmisión; sirve para saltar al minuto de cada comentario
+            m = re.search(r'"publish_time":(\d{10})', html)
+            al_obtener_info(en_vivo, int(m.group(1)) if m else None)
 
         for s in pg.locator('script[type="application/json"]').all():
             try:
@@ -208,10 +210,11 @@ def fuente_facebook(video_id: str, al_obtener_info=None):
 
     info_enviada = False
 
-    def avisar(en_vivo):
+    def avisar(en_vivo, inicio):
         nonlocal info_enviada
         if al_obtener_info and not info_enviada:
-            al_obtener_info(**_titulo_publico(video_id), en_vivo=en_vivo)
+            inicio_iso = datetime.fromtimestamp(inicio, tz=timezone.utc).isoformat() if inicio else None
+            al_obtener_info(**_titulo_publico(video_id), en_vivo=en_vivo, inicio_video=inicio_iso)
             info_enviada = True
 
     perfil = _copia_perfil(video_id)

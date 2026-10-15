@@ -31,6 +31,14 @@ def link_video(video_id: str) -> str:
     return f"https://www.youtube.com/watch?v={video_id}"
 
 
+def inicio_youtube(video_id: str) -> str | None:
+    """Hora (ISO, UTC) en que empezó una transmisión de YouTube."""
+    html = requests.get("https://www.youtube.com/watch", params={"v": video_id},
+                        headers={"User-Agent": _UA}, timeout=20).text
+    m = re.search(r'"startTimestamp":"([^"]+)"', html)
+    return m.group(1) if m else None
+
+
 def extraer_video_id(url_o_id: str) -> str:
     """ID de YouTube (11 caracteres) o "fb_<número>" para videos de Facebook."""
     if re.fullmatch(r"fb_\d{6,}", url_o_id):  # ya es un ID interno (así lo pasa la app al colector)
@@ -126,6 +134,7 @@ def info_video(video_id: str) -> dict:
         "html": html,
         "titulo": unescape(titulo.group(1)) if titulo else video_id,
         "canal": json.loads(canal.group(1)) if canal else None,
+        "inicio_video": inicio.group(1) if (inicio := re.search(r'"startTimestamp":"([^"]+)"', html)) else None,
         "en_vivo": '"isLiveNow":true' in html,
         "repeticion": bool(chat and chat.get("isReplay")),
         "chat": chat,

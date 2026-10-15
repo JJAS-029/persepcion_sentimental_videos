@@ -7,7 +7,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 import plotly.express as px
@@ -18,7 +18,7 @@ import streamlit as st
 import db
 import facebook
 import informe
-from fuentes import extraer_video_id, link_video, plataforma
+from fuentes import extraer_video_id, inicio_youtube, link_video, plataforma
 from rutas import LOGS, comando_colector, comando_login_facebook
 
 TZ = "America/Mexico_City"
@@ -103,6 +103,36 @@ def palabras_top(textos: pd.Series, n: int = 15) -> pd.DataFrame:
             if w not in STOPWORDS:
                 c[w] += 1
     return pd.DataFrame(c.most_common(n), columns=["Palabra", "Menciones"])
+
+
+# ---------------------------------------------------------------- momento del video
+RETRASO_COMENTARIO = 30  # la gente comenta ~10-30 s después de lo que vio (retraso de la transmisión + reacción)
+
+
+def inicio_de(video_id: str, primer_comentario=None) -> tuple:
+    """(hora de inicio de la transmisión, es_aproximada). Si no se conoce, usa el primer comentario."""
+    fila = sesiones().set_index("video_id").loc[video_id]
+    valor = fila.get("inicio_video")
+    if not valor and plataforma(video_id) == "YouTube" and video_id not in st.session_state.setdefault("sin_inicio", set()):
+        try:
+            valor = inicio_youtube(video_id)
+        except requests.RequestException:
+            valor = None
+        if valor:
+            db.sesion(conexion(), video_id, inicio_video=valor)
+        else:
+            st.session_state["sin_inicio"].add(video_id)
+    inicio = pd.Timestamp(valor).tz_convert(TZ) if valor else None
+    if inicio is None or (primer_comentario is not None and inicio > primer_comentario):
+        return primer_comentario, True
+    return inicio, False
+
+
+def url_momento(video_id: str, segundos: int) -> str:
+    segundos = max(0, int(segundos))
+    if plataforma(video_id) == "YouTube":
+        return f"https://www.youtube.com/watch?v={video_id}&t={segundos}s"
+    return f"{link_video(video_id)}&t={segundos}"
 
 
 # ---------------------------------------------------------------- interfaz
@@ -225,6 +255,11 @@ def panel():
         st.info("Sin mensajes en este periodo todavía. "
                 "(Al iniciar, la primera vez tarda en cargar los modelos de lenguaje.)")
         return
+    for d in partes:
+        v = d["video_id"].iat[0]
+        inicio, _ = inicio_de(v, d["hora"].min())
+        segundos = ((d["hora"] - inicio).dt.total_seconds() - RETRASO_COMENTARIO).clip(lower=0).astype(int)
+        d["Ver"] = [url_momento(v, s) for s in segundos]
     df = pd.concat(partes).sort_values("hora")
 
     st.caption(f"Periodo mostrado: {df['hora'].min():%H:%M} a {df['hora'].max():%H:%M} (hora del centro)"
@@ -252,7 +287,16 @@ def panel():
     fig = px.bar(serie, x="hora", y="Mensajes", color="Sentimiento", color_discrete_map=COLORES,
                  category_orders={"Sentimiento": ORDEN}, title=f"{titulo_barras}, cada {ventana}")
     fig.update_layout(bargap=0.15, legend_title_text="", xaxis_title="", hovermode="x unified")
-    st.plotly_chart(fig, width="stretch")
+    evento = st.plotly_chart(fig, width="stretch", on_select="rerun", selection_mode="points", key="barras")
+    puntos = (evento or {}).get("selection", {}).get("points", [])
+    if puntos:
+        hora_clic = pd.Timestamp(puntos[0]["x"])
+        hora_clic = hora_clic.tz_localize(TZ) if hora_clic.tzinfo is None else hora_clic.tz_convert(TZ)
+        if st.session_state.get("ultimo_clic") != str(hora_clic):
+            st.session_state["ultimo_clic"] = str(hora_clic)
+            st.session_state["hora_momento"] = hora_clic.time().replace(second=0, microsecond=0)
+            st.rerun(scope="app")
+    st.caption("💡 Haz clic en una barra para ver en el video qué se estaba diciendo en ese minuto (abajo, en 🎬).")
 
     tabla = (df.groupby([pd.Grouper(key="hora", freq=ventana), "Video"])["Sentimiento"]
                .value_counts(normalize=True).unstack(fill_value=0).reindex(columns=ORDEN, fill_value=0))
@@ -278,8 +322,10 @@ def panel():
     fig4.update_traces(marker_color="#2a78d6")
     b.plotly_chart(fig4, width="stretch")
 
-    cols = ["hora", "Sentimiento", "Video", "autor", "mensaje", "Emoción"] if len(partes) > 1 else \
-           ["hora", "Sentimiento", "autor", "mensaje", "Emoción"]
+    cols = ["hora", "Sentimiento", "Ver", "Video", "autor", "mensaje", "Emoción"] if len(partes) > 1 else \
+           ["hora", "Sentimiento", "Ver", "autor", "mensaje", "Emoción"]
+    columnas = {"Ver": st.column_config.LinkColumn("Video", display_text="▶ Ver",
+                                                   help="Abre el video unos segundos antes del comentario")}
 
     def para_tabla(d: pd.DataFrame) -> pd.DataFrame:
         return d[cols].assign(hora=d["hora"].dt.strftime("%H:%M:%S"),
@@ -287,13 +333,44 @@ def panel():
 
     a, b = st.columns(2)
     a.subheader("Últimos comentarios")
-    a.dataframe(para_tabla(df.iloc[::-1].head(50)), hide_index=True, width="stretch", height=400)
+    a.dataframe(para_tabla(df.iloc[::-1].head(50)), hide_index=True, width="stretch", height=400,
+                column_config=columnas)
     b.subheader("Más negativos / agresivos")
     criticos = df.assign(score=df["p_neg"] + df["odio"] + df["agresivo"]).sort_values("score", ascending=False)
-    b.dataframe(para_tabla(criticos.head(50)), hide_index=True, width="stretch", height=400)
+    b.dataframe(para_tabla(criticos.head(50)), hide_index=True, width="stretch", height=400,
+                column_config=columnas)
 
 
 panel()
+
+# ---------------------------------------------------------------- ver el momento (fuera del auto-refresco)
+st.divider()
+st.header("🎬 Ver el momento en el video")
+st.caption("Elige una hora (o haz clic en una barra de la gráfica) para ver qué se estaba diciendo. "
+           f"El video empieza {RETRASO_COMENTARIO} s antes, porque la gente comenta con retraso.")
+if videos:
+    con_youtube = [v for v in videos if plataforma(v) == "YouTube"]
+    m1, m2, m3 = st.columns([3, 1, 1])
+    v_mom = m1.selectbox("Video", videos, index=videos.index(con_youtube[0]) if con_youtube else 0,
+                         format_func=cortas.get, key="video_momento")
+    hora_mom = m2.time_input("Hora", value=None, step=60, key="hora_momento")
+    antes = m3.number_input("Segundos antes", 0, 600, RETRASO_COMENTARIO, step=15)
+    if hora_mom:
+        datos_v = cargar(v_mom)
+        inicio, aprox = inicio_de(v_mom, datos_v["hora"].min() if not datos_v.empty else None)
+        if inicio is None:
+            st.info("Aún no hay datos para ubicar el inicio de este video.")
+        else:
+            momento = pd.Timestamp(datetime.combine(inicio.date(), hora_mom)).tz_localize(TZ)
+            if momento < inicio - timedelta(hours=1):  # la transmisión cruzó la medianoche
+                momento += timedelta(days=1)
+            seg = max(0, int((momento - inicio).total_seconds()) - int(antes))
+            st.caption(f"Minuto **{seg // 3600}:{seg % 3600 // 60:02d}:{seg % 60:02d}** del video "
+                       f"({hora_mom:%H:%M} hora del centro)"
+                       + (" · ⚠️ inicio aproximado (primer comentario), puede haber desfase" if aprox else ""))
+            if plataforma(v_mom) == "YouTube":
+                st.video(f"https://www.youtube.com/watch?v={v_mom}", start_time=seg)
+            st.link_button(f"Abrir en {plataforma(v_mom)} en ese momento ↗", url_momento(v_mom, seg))
 
 # ---------------------------------------------------------------- informe (fuera del auto-refresco)
 st.divider()

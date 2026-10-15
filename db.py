@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS sesiones (
     video_id    TEXT PRIMARY KEY,
     titulo      TEXT,
     canal       TEXT,
+    inicio_video TEXT,                -- hora (UTC) en que empezó la transmisión
     modo        TEXT,                 -- "en vivo" / "repetición"
     pid         INTEGER,              -- proceso del colector
     inicio      TEXT,
@@ -43,10 +44,11 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=30, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
-    try:  # bases creadas antes de existir la columna
-        conn.execute("ALTER TABLE sesiones ADD COLUMN canal TEXT")
-    except sqlite3.OperationalError:
-        pass
+    for columna in ("canal", "inicio_video"):  # bases creadas antes de existir estas columnas
+        try:
+            conn.execute(f"ALTER TABLE sesiones ADD COLUMN {columna} TEXT")
+        except sqlite3.OperationalError:
+            pass
     return conn
 
 

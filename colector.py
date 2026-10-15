@@ -93,8 +93,8 @@ def main():
     db.sesion(conn, video_id, pid=os.getpid(), inicio=datetime.now(timezone.utc).isoformat(),
               estado="iniciando", detalle="Consultando el video...")
     if video_id.startswith("fb_"):
-        def guardar_info(titulo, canal, en_vivo):  # se llama desde el hilo del navegador
-            db.sesion(db.connect(), video_id, titulo=titulo, canal=canal,
+        def guardar_info(titulo, canal, en_vivo, inicio_video):  # se llama desde el hilo del navegador
+            db.sesion(db.connect(), video_id, titulo=titulo, canal=canal, inicio_video=inicio_video,
                       modo="en vivo" if en_vivo else "publicado")
 
         db.sesion(conn, video_id, detalle="Cargando modelos de lenguaje...")
@@ -102,7 +102,7 @@ def main():
     else:
         try:
             info = info_video(video_id)
-            db.sesion(conn, video_id, titulo=info["titulo"], canal=info["canal"],
+            db.sesion(conn, video_id, titulo=info["titulo"], canal=info["canal"], inicio_video=info["inicio_video"],
                       modo="en vivo" if info["en_vivo"] else ("repetición" if info["repeticion"] else "sin chat"),
                       detalle="Cargando modelos de lenguaje...")
         except Exception as e:  # noqa: BLE001 - el título es informativo; seguimos sin él
