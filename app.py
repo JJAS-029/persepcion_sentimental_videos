@@ -117,7 +117,7 @@ def conectar_facebook() -> None:
 
 
 with st.form("nuevo", clear_on_submit=True, border=True):
-    links = st.text_area("Links de los videos — uno por línea, YouTube y Facebook mezclados", height=110,
+    links = st.text_area("Links de los videos (YouTube y Facebook) — uno por línea o separados por coma", height=110,
                          placeholder="https://www.youtube.com/watch?v=...\nhttps://www.facebook.com/.../videos/...")
     enviar = st.form_submit_button("▶ Iniciar", type="primary")
 fb1, fb2 = st.columns([5, 1], vertical_alignment="center")
@@ -132,7 +132,9 @@ else:
 if enviar and links.strip():
     actual = sesiones().set_index("video_id")
     iniciados, avisos = [], []
-    for linea in dict.fromkeys(l.strip() for l in links.splitlines() if l.strip()):
+    # Acepta links por línea, separados por coma/espacio/punto y coma, o pegados uno tras otro
+    partes = re.split(r"[\s,;]+|(?=https?://)", links)
+    for linea in dict.fromkeys(l.strip() for l in partes if l and l.strip()):
         try:
             vid = extraer_video_id(linea)
         except (ValueError, requests.RequestException):
