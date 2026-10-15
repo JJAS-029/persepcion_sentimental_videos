@@ -21,6 +21,17 @@ CREATE TABLE IF NOT EXISTS mensajes (
     agresivo      INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_video_ts ON mensajes(video_id, ts_utc);
+
+CREATE TABLE IF NOT EXISTS sesiones (
+    video_id    TEXT PRIMARY KEY,
+    titulo      TEXT,
+    modo        TEXT,                 -- "en vivo" / "repetición"
+    pid         INTEGER,              -- proceso del colector
+    inicio      TEXT,
+    estado      TEXT,                 -- iniciando, recolectando, terminado, detenido, error
+    recibidos   INTEGER DEFAULT 0,
+    detalle     TEXT
+);
 """
 
 
@@ -39,3 +50,12 @@ def insertar(conn: sqlite3.Connection, filas: list[dict]) -> int:
     cur = conn.executemany(sql, [tuple(f.get(c) for c in cols) for f in filas])
     conn.commit()
     return cur.rowcount
+
+
+def sesion(conn: sqlite3.Connection, video_id: str, **campos) -> None:
+    """Crea o actualiza el registro de estado de la recolección de un video."""
+    conn.execute("INSERT OR IGNORE INTO sesiones (video_id) VALUES (?)", (video_id,))
+    if campos:
+        asignaciones = ", ".join(f"{k} = ?" for k in campos)
+        conn.execute(f"UPDATE sesiones SET {asignaciones} WHERE video_id = ?", (*campos.values(), video_id))
+    conn.commit()

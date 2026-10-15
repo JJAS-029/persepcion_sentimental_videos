@@ -48,42 +48,33 @@ def _texto_runs(msg: dict) -> str:
 
 def _continuacion(data: dict):
     for c in data.get("continuations", []):
-        for k in ("invalidationContinuationData", "timedContinuationData", "reloadContinuationData"):
+        for k in ("invalidationContinuationData", "timedContinuationData",
+                  "reloadContinuationData", "liveChatReplayContinuationData"):
             if k in c:
                 return c[k]["continuation"], c[k].get("timeoutMs", 3000)
     return None, None
 
 
-def fuente_web(video_id: str):
-    """Lee el chat con el mismo endpoint que usa la página de YouTube (sin API key)."""
-    s = requests.Session()
-    s.headers.update({"User-Agent": _UA, "Accept-Language": "es-MX,es;q=0.9"})
-    html = s.get("https://www.youtube.com/live_chat", params={"v": video_id, "is_popout": "1"}, timeout=20).text
+def _initial_data(html: str) -> dict | None:
     m = re.search(r'(?:window\["ytInitialData"\]|var ytInitialData)\s*=\s*(\{.+?\});\s*</script>', html)
-    if not m:
-        raise RuntimeError("El video no tiene chat en vivo disponible (¿aún no empieza o el chat está desactivado?)")
-    inicial = json.loads(m.group(1))
-    api_key = re.search(r'"INNERTUBE_API_KEY":"([^"]+)"', html).group(1)
-    version = re.search(r'"INNERTUBE_CLIENT_VERSION":"([^"]+)"', html).group(1)
-    chat = inicial["contents"]["liveChatRenderer"]
-    # Menú "Chat en vivo" (todos los mensajes) en vez de "Chat destacado" (filtrado)
+    return json.loads(m.group(1)) if m else None
+
+
+def _cont_chat_completo(chat: dict) -> str | None:
+    """Del menú del chat elige "Chat en vivo" (todos) en lugar de "Chat destacado" (filtrado)."""
     try:
         submenu = chat["header"]["liveChatHeaderRenderer"]["viewSelector"]["sortFilterSubMenuRenderer"]["subMenuItems"]
-        cont = submenu[-1]["continuation"]["reloadContinuationData"]["continuation"]
+        return submenu[-1]["continuation"]["reloadContinuationData"]["continuation"]
     except (KeyError, IndexError):
-        cont, _ = _continuacion(chat)
+        return _continuacion(chat)[0]
 
-    url = f"https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key={api_key}&prettyPrint=false"
-    ctx = {"client": {"clientName": "WEB", "clientVersion": version, "hl": "es", "gl": "MX"}}
-    vistos: set[str] = set()
-    while cont:
-        r = s.post(url, json={"context": ctx, "continuation": cont}, timeout=20)
-        r.raise_for_status()
-        data = r.json().get("continuationContents", {}).get("liveChatContinuation")
-        if not data:
-            return  # la transmisión terminó
-        for act in data.get("actions", []):
-            item = act.get("addChatItemAction", {}).get("item", {})
+
+def _mensajes(acciones: list, vistos: set):
+    for act in acciones:
+        # En repeticiones cada acción viene envuelta en replayChatItemAction
+        internas = act.get("replayChatItemAction", {}).get("actions", [act])
+        for a in internas:
+            item = a.get("addChatItemAction", {}).get("item", {})
             for tipo in ("liveChatTextMessageRenderer", "liveChatPaidMessageRenderer"):
                 if tipo not in item:
                     continue
@@ -99,6 +90,77 @@ def fuente_web(video_id: str):
                     "mensaje": texto,
                     "tipo": tipo,
                 }
+
+
+def info_video(video_id: str) -> dict:
+    """Título, estado (en vivo / repetición) y si tiene chat disponible."""
+    s = requests.Session()
+    s.headers.update({"User-Agent": _UA, "Accept-Language": "es-MX,es;q=0.9"})
+    html = s.get("https://www.youtube.com/watch", params={"v": video_id}, timeout=20).text
+    datos = _initial_data(html) or {}
+    titulo = re.search(r"<title>(.*?)(?: - YouTube)?</title>", html)
+    chat = (datos.get("contents", {}).get("twoColumnWatchNextResults", {})
+                 .get("conversationBar", {}).get("liveChatRenderer"))
+    return {
+        "session": s,
+        "html": html,
+        "titulo": titulo.group(1) if titulo else video_id,
+        "en_vivo": '"isLiveNow":true' in html,
+        "repeticion": bool(chat and chat.get("isReplay")),
+        "chat": chat,
+    }
+
+
+def fuente_web(video_id: str):
+    """Lee el chat (en vivo o repetición) con el mismo endpoint que usa la página de YouTube."""
+    info = info_video(video_id)
+    s, html, chat = info["session"], info["html"], info["chat"]
+    if not chat:
+        raise RuntimeError("El video no tiene chat disponible (está desactivado o no es transmisión en vivo).")
+    api_key = re.search(r'"INNERTUBE_API_KEY":"([^"]+)"', html).group(1)
+    version = re.search(r'"INNERTUBE_CLIENT_VERSION":"([^"]+)"', html).group(1)
+    ctx = {"client": {"clientName": "WEB", "clientVersion": version, "hl": "es", "gl": "MX"}}
+    base = "https://www.youtube.com/youtubei/v1/live_chat"
+    vistos: set[str] = set()
+
+    if chat.get("isReplay"):
+        cont = _continuacion(chat)[0]
+        pagina = _initial_data(s.get("https://www.youtube.com/live_chat_replay",
+                                     params={"continuation": cont}, timeout=20).text)
+        if pagina and "liveChatRenderer" in pagina.get("contents", {}):
+            cont = _cont_chat_completo(pagina["contents"]["liveChatRenderer"]) or cont
+        offset = "0"
+        while cont:
+            r = s.post(f"{base}/get_live_chat_replay?key={api_key}&prettyPrint=false",
+                       json={"context": ctx, "continuation": cont,
+                             "currentPlayerState": {"playerOffsetMs": offset}}, timeout=20)
+            r.raise_for_status()
+            data = r.json().get("continuationContents", {}).get("liveChatContinuation")
+            if not data:
+                return
+            acciones = data.get("actions", [])
+            if acciones:
+                ultimo = acciones[-1].get("replayChatItemAction", {}).get("videoOffsetTimeMsec")
+                offset = ultimo or offset
+            yield from _mensajes(acciones, vistos)
+            cont, _ = _continuacion(data)
+            time.sleep(0.3)
+        return
+
+    pagina = _initial_data(s.get("https://www.youtube.com/live_chat",
+                                 params={"v": video_id, "is_popout": "1"}, timeout=20).text) or {}
+    chat_vivo = pagina.get("contents", {}).get("liveChatRenderer")
+    if not chat_vivo:
+        raise RuntimeError("El chat en vivo está inhabilitado para esta transmisión.")
+    cont = _cont_chat_completo(chat_vivo)
+    while cont:
+        r = s.post(f"{base}/get_live_chat?key={api_key}&prettyPrint=false",
+                   json={"context": ctx, "continuation": cont}, timeout=20)
+        r.raise_for_status()
+        data = r.json().get("continuationContents", {}).get("liveChatContinuation")
+        if not data:
+            return  # la transmisión terminó
+        yield from _mensajes(data.get("actions", []), vistos)
         cont, espera = _continuacion(data)
         time.sleep(min(max(espera / 1000, 1), 10))
 

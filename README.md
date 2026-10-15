@@ -1,60 +1,62 @@
-# Percepción sentimental de videos en vivo
+# Monitor de percepción en YouTube
 
-Monitorea en tiempo real el chat de una transmisión en vivo de YouTube y clasifica
-cada comentario por **sentimiento** (positivo / neutro / negativo), **emoción** y
-**discurso de odio / agresividad**, usando modelos de [pysentimiento](https://github.com/pysentimiento/pysentimiento)
-entrenados con texto de redes sociales en español. Todo corre local: los comentarios no salen del equipo.
+Analiza el chat de una transmisión de YouTube (en vivo o ya terminada) y clasifica cada
+comentario por **sentimiento** (positivo / neutro / negativo), **emoción** y
+**discurso de odio / agresividad**, con modelos de [pysentimiento](https://github.com/pysentimiento/pysentimiento)
+entrenados con texto de redes sociales en español. Todo corre en el equipo: los comentarios no se envían a ningún servicio externo.
 
-```
-YouTube chat ──► colector.py ──► data/comentarios.db (SQLite) ──► dashboard.py (Streamlit)
-               (lotes cada 2 s,
-                3 modelos NLP)
-```
+## Para usuarios
 
-## Instalación
+### Instalación (una sola vez)
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
-pip install -r requirements.txt
-```
+1. Descarga o copia esta carpeta al equipo (por ejemplo en `Documentos`).
+2. Doble clic en **`Instalar.bat`**. Tarda unos 10–15 minutos: instala Python si hace falta,
+   las librerías y descarga los modelos (~1 GB). Requiere internet.
+3. Al terminar aparece en el escritorio el acceso **"Monitor de percepcion"**.
 
-La primera ejecución descarga los modelos (~1 GB).
+> Si dice que no encontró Python y no logra instalarlo, instálalo desde
+> <https://www.python.org/downloads/> marcando **"Add python.exe to PATH"** y vuelve a ejecutar `Instalar.bat`.
 
-## Uso
+### Uso
 
-Dos terminales:
+1. Doble clic en **"Monitor de percepcion"** (escritorio) o en `Iniciar monitor.bat`.
+   Se abre una ventana negra (**no cerrarla**) y el navegador con la aplicación.
+2. Pega el link del video de YouTube y presiona **▶ Iniciar**.
+3. En ~1 minuto empiezan a aparecer resultados; la página se actualiza sola.
+4. Para terminar, presiona **⏹ Detener**. Con **⬇ Descargar** obtienes los comentarios en CSV (abre en Excel).
 
-```powershell
-# 1) Colector
-python colector.py "https://www.youtube.com/watch?v=XXXXXXXXXXX"
+Los videos analizados quedan guardados y se pueden volver a consultar desde el selector **Video**.
 
-# 2) Dashboard (abre http://localhost:8501)
-streamlit run dashboard.py
-```
+### ¿Qué significa cada indicador?
 
-Opciones del colector:
-
-| Opción | Descripción |
+| Indicador | Significado |
 |---|---|
-| `--fuente web` | (default) Lee el chat completo con el mismo endpoint que usa la página de YouTube. Sin API key. |
-| `--fuente api` | YouTube Data API v3. Requiere `$env:YOUTUBE_API_KEY="..."`. Respaldo si `web` falla. |
-| `--fuente pytchat` | Librería pytchat. En pruebas (oct 2026) solo recibía el chat "destacado" (muy pocos mensajes). |
-| `--fuente chatdl` | Librería chat-downloader. En pruebas (oct 2026) no funcionaba con YouTube. |
-| `--intervalo 2` | Segundos entre lotes de clasificación. |
-| `--sin-odio` | No carga el modelo de discurso de odio (arranca más rápido). |
+| Positivo / Negativo | % de comentarios con ese sentimiento. |
+| Índice neto | % positivos − % negativos. De −100 (todo negativo) a +100 (todo positivo). |
+| Odio / agresión | Comentarios que el modelo marca como discurso de odio o agresivos. |
+| Emociones | Alegría, enojo, tristeza, miedo, sorpresa, asco (se excluyen los que no expresan ninguna). |
 
-Se pueden correr varios colectores (uno por video) sobre la misma base; el dashboard filtra por video.
+### Limitaciones
 
-## Dashboard
+- El modelo no detecta bien el sarcasmo, ironía ni el contexto político local: úsese como **indicador de tendencia**, no como verdad comentario por comentario.
+- Si el chat del video está desactivado, no hay nada que analizar.
+- Videos ya terminados: se analiza la repetición del chat completa; en CPU tarda ~20 min por cada 10 mil mensajes.
+- La lectura del chat usa la interfaz interna de la página de YouTube; si YouTube la cambia, puede requerir ajuste (ver `--fuente api` abajo).
 
-- KPIs: total de mensajes, ritmo (msgs/min), % positivo y negativo, índice neto y alertas de odio/agresión.
-- Mensajes por sentimiento a lo largo del tiempo e índice neto (positivo − negativo).
-- Emociones y palabras más mencionadas.
-- Últimos comentarios y comentarios más negativos/agresivos.
-- Descarga a CSV.
+## Para desarrolladores
 
-## Limitaciones
+```
+app.py (Streamlit) ──lanza──► colector.py ──► data/comentarios.db (SQLite, WAL) ◄──lee── app.py
+                               fuentes.py: chat de YouTube
+                               pysentimiento: sentimiento, emoción, odio
+```
 
-- El modelo no detecta bien el sarcasmo ni el contexto político local; tómese como indicador de tendencia, no como verdad por comentario.
-- La fuente `web` usa un endpoint no oficial; si YouTube lo cambia puede dejar de funcionar → usar `--fuente api`.
+- `app.py`: interfaz; inicia/detiene colectores como subprocesos y muestra resultados.
+- `colector.py`: puede usarse solo por consola: `python colector.py <URL> [--fuente web|api|pytchat|chatdl]`.
+- `fuentes.py`: lectores de chat.
+  - `web` (default): chat completo, en vivo y repetición, sin API key.
+  - `api`: YouTube Data API v3 oficial (`$env:YOUTUBE_API_KEY`), solo en vivo.
+  - `pytchat` / `chatdl`: en pruebas de oct 2026, pytchat solo recibía el chat destacado y chat-downloader no funcionaba.
+- `db.py`: tablas `mensajes` y `sesiones` (estado de cada recolección). Logs en `data/logs/`.
+
+Instalación manual: `python -m venv .venv && .venv\Scripts\pip install -r requirements.txt`, luego `.venv\Scripts\streamlit run app.py`.
