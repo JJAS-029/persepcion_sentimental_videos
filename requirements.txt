@@ -1,0 +1,8 @@
+pysentimiento
+pytchat
+chat-downloader
+streamlit
+plotly
+pandas
+requests
+tzdata
