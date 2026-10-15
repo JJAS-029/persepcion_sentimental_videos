@@ -150,7 +150,7 @@ if enviar and links.strip():
     for a in avisos:
         st.warning(a)
     if iniciados:
-        st.session_state["video"] = iniciados[0]
+        st.session_state["nuevos"] = iniciados
         st.toast(f"Recolección iniciada en {len(iniciados)} video(s). Los primeros resultados tardan ~1 minuto. "
                  "Los videos ya terminados se leen completos; los que están en vivo se siguen monitoreando.", icon="✅")
 
@@ -160,12 +160,24 @@ if ses.empty:
     st.stop()
 
 ICONO_PLATAFORMA = {"YouTube": "▶️", "Facebook": "📘"}
+# Colores por video, fijos según el orden en que se agregaron (no cambian al filtrar)
+PALETA = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
+orden_alta = list(ses["video_id"][::-1])
+color_video = {v: PALETA[i % len(PALETA)] for i, v in enumerate(orden_alta)}
 etiquetas = {r.video_id: f"{ESTADOS.get(r.estado, r.estado)} · {ICONO_PLATAFORMA[plataforma(r.video_id)]} "
                          f"{r.titulo or r.video_id}" for r in ses.itertuples()}
+cortas = {r.video_id: f"{ICONO_PLATAFORMA[plataforma(r.video_id)]} {(r.titulo or r.video_id)[:45]}"
+          for r in ses.itertuples()}
 ids = list(etiquetas)
-previo = st.session_state.get("video")
-video = st.selectbox("Video", ids, index=ids.index(previo) if previo in ids else 0, format_func=etiquetas.get)
-st.session_state["video"] = video
+
+activos = [v for v in ids if ses.set_index("video_id").loc[v, "estado"] in ("iniciando", "recolectando")]
+if "videos" not in st.session_state:
+    st.session_state["videos"] = activos or ids[:1]
+nuevos = st.session_state.pop("nuevos", [])
+st.session_state["videos"] = list(dict.fromkeys(
+    [v for v in st.session_state["videos"] if v in ids] + [v for v in nuevos if v in ids]))
+videos = st.multiselect("Videos en el tablero", ids, key="videos", format_func=etiquetas.get,
+                        help="Elige uno o varios: el tablero los muestra juntos y los compara.")
 
 c1, c2, c3, c4 = st.columns([1, 1, 2, 1])
 desde = c1.time_input("Desde (hora)", value=None, step=60, key="desde",
@@ -177,56 +189,80 @@ ventana = c3.select_slider("Agrupar gráficas por", options=["30s", "1min", "2mi
 refresco = c4.number_input("Actualizar cada (s)", 2, 60, 5)
 
 
+def indicadores(d: pd.DataFrame) -> dict:
+    pct = d["Sentimiento"].value_counts(normalize=True).reindex(ORDEN, fill_value=0) * 100
+    ult5 = d[d["hora"] >= d["hora"].max() - pd.Timedelta(minutes=5)]
+    return {"Mensajes": len(d), "Msgs/min (últ. 5 min)": round(len(ult5) / 5, 1),
+            "Positivo %": round(pct["Positivo"]), "Negativo %": round(pct["Negativo"]),
+            "Índice neto": round(pct["Positivo"] - pct["Negativo"]),
+            "Odio / agresión": int(d["odio"].sum() + d["agresivo"].sum())}
+
+
 @st.fragment(run_every=refresco)
 def panel():
-    s = sesiones().set_index("video_id").loc[video]
-    corriendo = s["estado"] in ("iniciando", "recolectando")
-    e1, e2 = st.columns([5, 1], vertical_alignment="center")
-    e1.markdown(f"**{ESTADOS.get(s['estado'], s['estado'])}** · {s['modo'] or ''} · {s['detalle'] or ''}  \n"
-                f"[Abrir video en {plataforma(video)}]({link_video(video)})")
-    if corriendo and e2.button("⏹ Detener", width="stretch"):
-        detener(s["pid"])
-        db.sesion(conexion(), video, estado="detenido", detalle="Detenido desde la app")
-        st.rerun()
-    if s["estado"] in ("error", "interrumpido") and e2.button("↻ Reintentar", width="stretch"):
-        iniciar(video)
-        st.rerun()
+    if not videos:
+        st.info("Elige al menos un video en **Videos en el tablero**.")
+        return
+    estado = sesiones().set_index("video_id")
+    with st.container(border=True):
+        for v in videos:
+            s = estado.loc[v]
+            e1, e2 = st.columns([6, 1], vertical_alignment="center")
+            e1.markdown(f"**{cortas[v]}** — {ESTADOS.get(s['estado'], s['estado'])} · {s['modo'] or ''} · "
+                        f"{s['detalle'] or ''} · [abrir]({link_video(v)})")
+            if s["estado"] in ("iniciando", "recolectando") and e2.button("⏹ Detener", key=f"det_{v}", width="stretch"):
+                detener(s["pid"])
+                db.sesion(conexion(), v, estado="detenido", detalle="Detenido desde la app")
+                st.rerun()
+            if s["estado"] in ("error", "interrumpido") and e2.button("↻ Reintentar", key=f"rei_{v}", width="stretch"):
+                iniciar(v)
+                st.rerun()
 
-    df = cargar(video, desde, hasta)
-    if df.empty:
+    partes = [cargar(v, desde, hasta).assign(Video=cortas[v], video_id=v) for v in videos]
+    partes = [d for d in partes if not d.empty]
+    if not partes:
         st.info("Sin mensajes en este periodo todavía. "
                 "(Al iniciar, la primera vez tarda en cargar los modelos de lenguaje.)")
         return
+    df = pd.concat(partes).sort_values("hora")
 
-    st.caption(f"Periodo mostrado: {df['hora'].min():%H:%M} a {df['hora'].max():%H:%M} (hora del centro)")
-    n = len(df)
-    pct = df["Sentimiento"].value_counts(normalize=True).reindex(ORDEN, fill_value=0) * 100
-    ultimos5 = df[df["hora"] >= df["hora"].max() - pd.Timedelta(minutes=5)]
+    st.caption(f"Periodo mostrado: {df['hora'].min():%H:%M} a {df['hora'].max():%H:%M} (hora del centro)"
+               + (f" · {len(partes)} videos combinados" if len(partes) > 1 else ""))
+    tot = indicadores(df)
     k = st.columns(6)
-    k[0].metric("Mensajes", f"{n:,}")
-    k[1].metric("Msgs/min (últ. 5 min)", f"{len(ultimos5) / 5:.1f}")
-    k[2].metric("Positivo", f"{pct['Positivo']:.0f}%")
-    k[3].metric("Negativo", f"{pct['Negativo']:.0f}%")
-    k[4].metric("Índice neto", f"{pct['Positivo'] - pct['Negativo']:+.0f}",
+    k[0].metric("Mensajes", f"{tot['Mensajes']:,}")
+    k[1].metric("Msgs/min (últ. 5 min)", f"{tot['Msgs/min (últ. 5 min)']:.1f}")
+    k[2].metric("Positivo", f"{tot['Positivo %']}%")
+    k[3].metric("Negativo", f"{tot['Negativo %']}%")
+    k[4].metric("Índice neto", f"{tot['Índice neto']:+d}",
                 help="% positivos − % negativos. Va de −100 (todo negativo) a +100 (todo positivo).")
-    k[5].metric("Odio / agresión", int(df["odio"].sum() + df["agresivo"].sum()),
+    k[5].metric("Odio / agresión", tot["Odio / agresión"],
                 help="Mensajes que el modelo marca como discurso de odio o agresivos.")
+
+    if len(partes) > 1:
+        st.subheader("Comparativo por video")
+        comp = pd.DataFrame([{"Video": d["Video"].iat[0], **indicadores(d)} for d in partes])
+        st.dataframe(comp, hide_index=True, width="stretch", column_config={
+            "Índice neto": st.column_config.NumberColumn(format="%+d")})
 
     serie = (df.groupby([pd.Grouper(key="hora", freq=ventana), "Sentimiento"]).size()
                .rename("Mensajes").reset_index())
+    titulo_barras = "Mensajes por sentimiento" + (" (todos los videos)" if len(partes) > 1 else "")
     fig = px.bar(serie, x="hora", y="Mensajes", color="Sentimiento", color_discrete_map=COLORES,
-                 category_orders={"Sentimiento": ORDEN}, title=f"Mensajes por sentimiento (cada {ventana})")
+                 category_orders={"Sentimiento": ORDEN}, title=f"{titulo_barras}, cada {ventana}")
     fig.update_layout(bargap=0.15, legend_title_text="", xaxis_title="", hovermode="x unified")
     st.plotly_chart(fig, width="stretch")
 
-    tabla = (df.groupby(pd.Grouper(key="hora", freq=ventana))["Sentimiento"]
+    tabla = (df.groupby([pd.Grouper(key="hora", freq=ventana), "Video"])["Sentimiento"]
                .value_counts(normalize=True).unstack(fill_value=0).reindex(columns=ORDEN, fill_value=0))
     neto = ((tabla["Positivo"] - tabla["Negativo"]) * 100).rename("Índice neto").reset_index()
-    fig2 = px.line(neto, x="hora", y="Índice neto", markers=True,
-                   title="Índice neto de sentimiento (positivo − negativo)")
-    fig2.update_traces(line_color="#2a78d6", line_width=2)
+    fig2 = px.line(neto, x="hora", y="Índice neto", color="Video", markers=True,
+                   color_discrete_map={cortas[v]: color_video[v] for v in videos},
+                   title="Índice neto de sentimiento (positivo − negativo)" + (" por video" if len(partes) > 1 else ""))
+    fig2.update_traces(line_width=2)
     fig2.add_hline(y=0, line_color="#9b9a94", line_dash="dot")
-    fig2.update_layout(yaxis_range=[-100, 100], xaxis_title="")
+    fig2.update_layout(yaxis_range=[-100, 100], xaxis_title="", legend_title_text="",
+                       showlegend=len(partes) > 1, legend=dict(orientation="h", y=-0.2))
     st.plotly_chart(fig2, width="stretch")
 
     a, b = st.columns(2)
@@ -241,7 +277,8 @@ def panel():
     fig4.update_traces(marker_color="#2a78d6")
     b.plotly_chart(fig4, width="stretch")
 
-    cols = ["hora", "autor", "mensaje", "Sentimiento", "Emoción"]
+    cols = ["hora", "Video", "autor", "mensaje", "Sentimiento", "Emoción"] if len(partes) > 1 else \
+           ["hora", "autor", "mensaje", "Sentimiento", "Emoción"]
     a, b = st.columns(2)
     a.subheader("Últimos comentarios")
     a.dataframe(df[cols].iloc[::-1].head(50).assign(hora=lambda d: d["hora"].dt.strftime("%H:%M:%S")),
@@ -261,7 +298,8 @@ st.caption("Usa **Desde / Hasta** (arriba) para limitar el informe y el CSV a un
            "Puedes combinar varios videos, por ejemplo la misma transmisión en YouTube y en Facebook: "
            "sale un bloque por cada uno. Se eligen los comentarios positivos y negativos más claros, sin repetidos.")
 ses_idx = ses.set_index("video_id")
-elegidos = st.multiselect("Videos a incluir", ids, default=[video], format_func=etiquetas.get)
+elegidos = st.multiselect("Videos a incluir", ids, default=videos, format_func=etiquetas.get,
+                          key="inf_" + "_".join(videos))
 if elegidos:
     base = pd.DataFrame({
         "video_id": elegidos,
