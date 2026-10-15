@@ -9,23 +9,30 @@ entrenados con texto de redes sociales en español. Todo corre en el equipo: los
 
 ### Instalación (una sola vez)
 
-1. Descarga o copia esta carpeta al equipo (por ejemplo en `Documentos`).
-2. Doble clic en **`Instalar.bat`**. Tarda unos 10–15 minutos: instala Python si hace falta,
-   las librerías y descarga los modelos (~1 GB). Requiere internet.
-3. Al terminar aparece en el escritorio el acceso **"Monitor de percepcion"**.
+Ejecuta **`Instalar_Monitor_de_percepcion.exe`** y sigue el asistente. No requiere permisos de
+administrador, ni Python, ni internet para instalar (los modelos de lenguaje ya vienen incluidos).
+Crea el acceso **"Monitor de percepcion"** en el escritorio y en el menú Inicio.
 
-> Si dice que no encontró Python y no logra instalarlo, instálalo desde
-> <https://www.python.org/downloads/> marcando **"Add python.exe to PATH"** y vuelve a ejecutar `Instalar.bat`.
+> Windows puede mostrar "Windows protegió su PC" porque el instalador no está firmado:
+> clic en **Más información → Ejecutar de todas formas**.
 
 ### Uso
 
-1. Doble clic en **"Monitor de percepcion"** (escritorio) o en `Iniciar monitor.bat`.
-   Se abre una ventana negra (**no cerrarla**) y el navegador con la aplicación.
+1. Abre **"Monitor de percepcion"**. Se abre una ventana negra (**no cerrarla**) y el navegador con la aplicación.
 2. Pega el link del video de YouTube y presiona **▶ Iniciar**.
 3. En ~1 minuto empiezan a aparecer resultados; la página se actualiza sola.
-4. Para terminar, presiona **⏹ Detener**. Con **⬇ Descargar** obtienes los comentarios en CSV (abre en Excel).
+4. Para terminar, presiona **⏹ Detener**.
 
 Los videos analizados quedan guardados y se pueden volver a consultar desde el selector **Video**.
+
+### Informe y cortes por horario
+
+- **Desde / Hasta (hora)**: limita gráficas, informe y CSV a un periodo, por ejemplo solo la
+  participación de un funcionario. Se puede ajustar en cualquier momento, aun con la recolección en curso.
+- **📝 Informe**: genera el texto en el formato solicitado (página, plataforma y link; luego
+  🟢 comentarios positivos y 🔴 negativos con el nombre de quien comenta). Se puede copiar o descargar en Word.
+  Se eligen los comentarios más claros de cada tipo, sin repetidos.
+- **⬇ CSV**: todos los comentarios del periodo con su clasificación (abre en Excel).
 
 ### ¿Qué significa cada indicador?
 
@@ -59,4 +66,17 @@ app.py (Streamlit) ──lanza──► colector.py ──► data/comentarios.d
   - `pytchat` / `chatdl`: en pruebas de oct 2026, pytchat solo recibía el chat destacado y chat-downloader no funcionaba.
 - `db.py`: tablas `mensajes` y `sesiones` (estado de cada recolección). Logs en `data/logs/`.
 
-Instalación manual: `python -m venv .venv && .venv\Scripts\pip install -r requirements.txt`, luego `.venv\Scripts\streamlit run app.py`.
+- `informe.py`: selección de comentarios y formato del informe (texto / Word).
+- `rutas.py`: rutas para desarrollo y para el .exe (datos en `%LOCALAPPDATA%\MonitorPercepcion`).
+
+Desarrollo: `python -m venv .venv && .venv\Scripts\pip install -r requirements.txt`, luego
+`.venv\Scripts\streamlit run app.py` (o `Iniciar monitor.bat`).
+
+### Generar el instalador
+
+```powershell
+.venv\Scripts\pip install pyinstaller
+.venv\Scripts\python exportar_modelos.py          # copia los modelos a .\modelos
+.venv\Scripts\pyinstaller monitor.spec --noconfirm # -> dist\Monitor de percepcion\ (~2 GB)
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" instalador.iss   # -> instalador\Instalar_Monitor_de_percepcion.exe
+```

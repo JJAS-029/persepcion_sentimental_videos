@@ -15,6 +15,7 @@ import json
 import os
 import re
 import time
+from html import unescape
 from datetime import datetime, timezone
 
 import requests
@@ -99,12 +100,14 @@ def info_video(video_id: str) -> dict:
     html = s.get("https://www.youtube.com/watch", params={"v": video_id}, timeout=20).text
     datos = _initial_data(html) or {}
     titulo = re.search(r"<title>(.*?)(?: - YouTube)?</title>", html)
+    canal = re.search(r'"ownerChannelName":("(?:[^"\\]|\\.)*")', html)
     chat = (datos.get("contents", {}).get("twoColumnWatchNextResults", {})
                  .get("conversationBar", {}).get("liveChatRenderer"))
     return {
         "session": s,
         "html": html,
-        "titulo": titulo.group(1) if titulo else video_id,
+        "titulo": unescape(titulo.group(1)) if titulo else video_id,
+        "canal": json.loads(canal.group(1)) if canal else None,
         "en_vivo": '"isLiveNow":true' in html,
         "repeticion": bool(chat and chat.get("isReplay")),
         "chat": chat,

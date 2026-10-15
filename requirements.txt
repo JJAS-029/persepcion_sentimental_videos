@@ -2,6 +2,7 @@ pysentimiento
 pytchat
 chat-downloader
 streamlit
+python-docx
 plotly
 pandas
 requests

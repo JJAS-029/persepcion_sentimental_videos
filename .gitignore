@@ -3,3 +3,7 @@ __pycache__/
 data/
 *.csv
 .env
+modelos/
+build/
+dist/
+instalador/

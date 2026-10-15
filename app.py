@@ -1,13 +1,13 @@
 """Monitor de percepción: pega el link de un video de YouTube y analiza su chat.
 
-Ejecutar con:  streamlit run app.py   (o doble clic en "Iniciar monitor.bat")
+Ejecutar con:  streamlit run app.py   (o con el .exe / "Iniciar monitor.bat")
 """
 import os
 import re
 import subprocess
 import sys
 from collections import Counter
-from pathlib import Path
+from datetime import datetime
 
 import pandas as pd
 import plotly.express as px
@@ -15,10 +15,10 @@ import psutil
 import streamlit as st
 
 import db
+import informe
 from fuentes import extraer_video_id
+from rutas import LOGS, comando_colector
 
-RAIZ = Path(__file__).parent
-LOGS = RAIZ / "data" / "logs"
 TZ = "America/Mexico_City"
 COLORES = {"Positivo": "#2a78d6", "Neutro": "#9b9a94", "Negativo": "#e34948"}
 ORDEN = ["Positivo", "Neutro", "Negativo"]
@@ -42,13 +42,14 @@ def conexion():
 # ---------------------------------------------------------------- colector
 def colector_vivo(pid) -> bool:
     try:
-        return bool(pid) and any("colector.py" in a for a in psutil.Process(int(pid)).cmdline())
+        return bool(pid) and "colector" in " ".join(psutil.Process(int(pid)).cmdline())
     except (psutil.Error, ValueError):
         return False
 
 
 def sesiones() -> pd.DataFrame:
     df = pd.read_sql_query("SELECT * FROM sesiones ORDER BY inicio DESC", conexion())
+    df = df.astype(object).where(df.notna(), None)  # NaN -> None, para que "titulo or video_id" funcione
     # Si el proceso murió sin avisar (se cerró la ventana, se apagó el equipo...)
     caidos = df["estado"].isin(["iniciando", "recolectando"]) & ~df["pid"].map(colector_vivo)
     df.loc[caidos, "estado"] = "interrumpido"
@@ -59,7 +60,7 @@ def iniciar(video_id: str) -> None:
     LOGS.mkdir(parents=True, exist_ok=True)
     log = open(LOGS / f"{video_id}.log", "a", encoding="utf-8")
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-    proc = subprocess.Popen([sys.executable, str(RAIZ / "colector.py"), video_id], cwd=RAIZ,
+    proc = subprocess.Popen(comando_colector(video_id, "--padre", str(os.getpid())),
                             stdout=log, stderr=subprocess.STDOUT, creationflags=flags,
                             env={**os.environ, "PYTHONIOENCODING": "utf-8"})
     db.sesion(conexion(), video_id, pid=proc.pid, estado="iniciando", detalle="Arrancando...")
@@ -76,11 +77,17 @@ def detener(pid) -> None:
 
 
 # ---------------------------------------------------------------- datos
-def cargar(video_id: str) -> pd.DataFrame:
+def cargar(video_id: str, desde=None, hasta=None) -> pd.DataFrame:
     df = pd.read_sql_query("SELECT * FROM mensajes WHERE video_id = ?", conexion(), params=(video_id,))
     if df.empty:
         return df
     df["hora"] = pd.to_datetime(df["ts_utc"], utc=True, format="ISO8601").dt.tz_convert(TZ)
+    reloj = df["hora"].dt.time
+    if desde:
+        df = df[reloj >= desde]
+    if hasta:
+        df = df[reloj.loc[df.index] <= hasta]
+    df = df.copy()
     df["Sentimiento"] = df["sentimiento"].map(SENT)
     df["Emoción"] = df["emocion"].map(EMO).fillna(df["emocion"])
     return df.sort_values("hora")
@@ -129,9 +136,13 @@ previo = st.session_state.get("video")
 video = st.selectbox("Video", ids, index=ids.index(previo) if previo in ids else 0, format_func=etiquetas.get)
 st.session_state["video"] = video
 
-c1, c2, c3 = st.columns([2, 1, 1])
-ventana = c1.select_slider("Agrupar por", options=["30s", "1min", "2min", "5min", "10min"], value="1min")
-refresco = c2.number_input("Actualizar cada (s)", 2, 60, 5)
+c1, c2, c3, c4 = st.columns([1, 1, 2, 1])
+desde = c1.time_input("Desde (hora)", value=None, step=60, key=f"desde_{video}",
+                      help="Vacío = desde el inicio. Úsalo para analizar solo una participación.")
+hasta = c2.time_input("Hasta (hora)", value=None, step=60, key=f"hasta_{video}",
+                      help="Vacío = hasta el último comentario.")
+ventana = c3.select_slider("Agrupar gráficas por", options=["30s", "1min", "2min", "5min", "10min"], value="1min")
+refresco = c4.number_input("Actualizar cada (s)", 2, 60, 5)
 
 
 @st.fragment(run_every=refresco)
@@ -149,11 +160,13 @@ def panel():
         iniciar(video)
         st.rerun()
 
-    df = cargar(video)
+    df = cargar(video, desde, hasta)
     if df.empty:
-        st.info("Esperando los primeros mensajes... (la primera vez tarda en cargar los modelos de lenguaje)")
+        st.info("Sin mensajes en este periodo todavía. "
+                "(Al iniciar, la primera vez tarda en cargar los modelos de lenguaje.)")
         return
 
+    st.caption(f"Periodo mostrado: {df['hora'].min():%H:%M} a {df['hora'].max():%H:%M} (hora del centro)")
     n = len(df)
     pct = df["Sentimiento"].value_counts(normalize=True).reindex(ORDEN, fill_value=0) * 100
     ultimos5 = df[df["hora"] >= df["hora"].max() - pd.Timedelta(minutes=5)]
@@ -206,9 +219,45 @@ def panel():
     b.dataframe(criticos[cols].head(50).assign(hora=lambda d: d["hora"].dt.strftime("%H:%M:%S")),
                 hide_index=True, width="stretch", height=400)
 
-    st.download_button("⬇ Descargar comentarios (CSV para Excel)",
-                       df.drop(columns=["hora"]).to_csv(index=False).encode("utf-8-sig"),
-                       file_name=f"comentarios_{video}.csv", mime="text/csv")
-
 
 panel()
+
+# ---------------------------------------------------------------- informe (fuera del auto-refresco)
+st.divider()
+st.header("📝 Informe")
+st.caption("Usa **Desde / Hasta** (arriba) para limitar el informe y el CSV a una participación. "
+           "Se eligen los comentarios positivos y negativos más claros, sin repetidos.")
+s = ses.set_index("video_id").loc[video]
+with st.form(f"informe_{video}", border=True):
+    c1, c2, c3 = st.columns([2, 1, 3])
+    pagina = c1.text_input("Página", value=s.get("canal") or "")
+    plataforma = c2.text_input("Plataforma", value="YouTube")
+    link_inf = c3.text_input("Link (puedes pegar uno acortado)", value=f"https://www.youtube.com/watch?v={video}")
+    c1, c2, c3 = st.columns(3)
+    por_tipo = c1.number_input("Comentarios por tipo", 1, 200, 10)
+    neutros = c2.checkbox("Incluir neutros (⚪)")
+    con_resumen = c3.checkbox("Incluir resumen con porcentajes")
+    generar = st.form_submit_button("Generar informe", type="primary")
+
+datos = cargar(video, desde, hasta)
+if generar:
+    if datos.empty:
+        st.warning("No hay comentarios en el periodo elegido.")
+    else:
+        sel = informe.seleccionar(datos, por_tipo, neutros)
+        st.session_state[f"texto_informe_{video}"] = informe.texto(sel, pagina, plataforma, link_inf,
+                                                    informe.resumen(datos) if con_resumen else None)
+if st.session_state.get(f"texto_informe_{video}"):
+    st.code(st.session_state[f"texto_informe_{video}"], language=None, wrap_lines=True)  # tiene botón de copiar
+    sello = datetime.now().strftime("%Y%m%d_%H%M")
+    d1, d2, _ = st.columns([1, 1, 3])
+    d1.download_button("⬇ Informe en Word", informe.word(st.session_state[f"texto_informe_{video}"]),
+                       file_name=f"informe_{video}_{sello}.docx", width="stretch",
+                       mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    d2.download_button("⬇ Informe en texto", st.session_state[f"texto_informe_{video}"].encode("utf-8"),
+                       file_name=f"informe_{video}_{sello}.txt", mime="text/plain", width="stretch")
+
+if not datos.empty:
+    st.download_button(f"⬇ Todos los comentarios del periodo ({len(datos):,}) en CSV para Excel",
+                       datos.drop(columns=["hora"]).to_csv(index=False).encode("utf-8-sig"),
+                       file_name=f"comentarios_{video}.csv", mime="text/csv")

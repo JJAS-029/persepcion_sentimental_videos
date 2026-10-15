@@ -12,8 +12,11 @@ import threading
 import time
 from datetime import datetime, timezone
 
+import psutil
+
 import db
 from fuentes import FUENTES, extraer_video_id, info_video
+from rutas import MODELOS
 
 # Caracteres de control / símbolos raros que solo meten ruido al modelo
 _RUIDO = re.compile(r"[\u200b-\u200f\u2060-\u206f\ufe00-\ufe0f]")
@@ -25,14 +28,23 @@ def limpiar(texto: str) -> str:
     return texto.strip()[:500]
 
 
+def crear_analizador(tarea: str):
+    """Usa la copia local de los modelos si existe (versión .exe); si no, los descarga de Hugging Face."""
+    from pysentimiento.analyzer import create_analyzer, models
+
+    local = MODELOS / tarea
+    if local.exists():
+        prepro = dict(models["es"][tarea].get("preprocessing_args", {}))
+        return create_analyzer(task=tarea, lang="es", model_name=str(local), preprocessing_args=prepro)
+    return create_analyzer(task=tarea, lang="es")
+
+
 class Clasificador:
     def __init__(self, odio: bool = True):
-        from pysentimiento import create_analyzer
-
         print("Cargando modelos (la primera vez descarga ~1 GB)...")
-        self.sent = create_analyzer(task="sentiment", lang="es")
-        self.emo = create_analyzer(task="emotion", lang="es")
-        self.odio = create_analyzer(task="hate_speech", lang="es") if odio else None
+        self.sent = crear_analizador("sentiment")
+        self.emo = crear_analizador("emotion")
+        self.odio = crear_analizador("hate_speech") if odio else None
         print("Modelos listos.")
 
     def __call__(self, textos: list[str]) -> list[dict]:
@@ -72,6 +84,7 @@ def main():
     ap.add_argument("--intervalo", type=float, default=2.0, help="segundos de espera cuando no hay mensajes nuevos")
     ap.add_argument("--lote-max", type=int, default=256)
     ap.add_argument("--sin-odio", action="store_true", help="no cargar el modelo de discurso de odio")
+    ap.add_argument("--padre", type=int, help="PID de la app; si se cierra, el colector se detiene")
     args = ap.parse_args()
 
     video_id = extraer_video_id(args.video)
@@ -80,7 +93,7 @@ def main():
               estado="iniciando", detalle="Consultando el video...")
     try:
         info = info_video(video_id)
-        db.sesion(conn, video_id, titulo=info["titulo"],
+        db.sesion(conn, video_id, titulo=info["titulo"], canal=info["canal"],
                   modo="en vivo" if info["en_vivo"] else ("repetición" if info["repeticion"] else "sin chat"),
                   detalle="Cargando modelos de lenguaje...")
     except Exception as e:  # noqa: BLE001 - el título es informativo; seguimos sin él
@@ -97,6 +110,9 @@ def main():
     total = 0
     try:
         while not (fin.is_set() and cola.empty()):
+            if args.padre and not psutil.pid_exists(args.padre):
+                db.sesion(conn, video_id, estado="detenido", detalle="Se cerró la aplicación")
+                return
             if cola.empty():
                 time.sleep(args.intervalo)
             lote = []

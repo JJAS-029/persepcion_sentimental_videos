@@ -1,5 +1,6 @@
 [server]
 port = 8501
+address = "localhost"
 headless = true  # sin el aviso de bienvenida que pide correo; el .bat abre el navegador
 
 [browser]

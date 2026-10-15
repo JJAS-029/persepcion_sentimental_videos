@@ -2,7 +2,9 @@
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "data" / "comentarios.db"
+from rutas import DATOS
+
+DB_PATH = DATOS / "comentarios.db"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS mensajes (
@@ -25,6 +27,7 @@ CREATE INDEX IF NOT EXISTS ix_video_ts ON mensajes(video_id, ts_utc);
 CREATE TABLE IF NOT EXISTS sesiones (
     video_id    TEXT PRIMARY KEY,
     titulo      TEXT,
+    canal       TEXT,
     modo        TEXT,                 -- "en vivo" / "repetición"
     pid         INTEGER,              -- proceso del colector
     inicio      TEXT,
@@ -40,6 +43,10 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=30, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    try:  # bases creadas antes de existir la columna
+        conn.execute("ALTER TABLE sesiones ADD COLUMN canal TEXT")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 
