@@ -392,10 +392,13 @@ if elegidos:
         st.caption("Puedes corregir el nombre de la página y pegar links acortados directamente en la tabla.")
         tabla = st.data_editor(base, hide_index=True, width="stretch", column_config={"video_id": None},
                                key=f"tabla_{'_'.join(elegidos)}")
-        c1, c2, c3 = st.columns(3)
-        por_tipo = c1.number_input("Comentarios por tipo (en cada video)", 1, 200, 10)
-        neutros = c2.checkbox("Incluir neutros (⚪)")
-        con_resumen = c3.checkbox("Incluir resumen con porcentajes")
+        c1, c2, c3, c4 = st.columns([2, 2, 1, 2], vertical_alignment="bottom")
+        por_tipo = c1.number_input("Comentarios por tipo (en cada video)", 1, 5000, 10)
+        todos = c2.checkbox("Todos los comentarios (sin límite)",
+                            help="Incluye todos los positivos y negativos del periodo, sin filtrar repetidos "
+                                 "ni mensajes de puro emoji. Ignora el número de la izquierda.")
+        neutros = c3.checkbox("Incluir neutros (⚪)")
+        con_resumen = c4.checkbox("Incluir resumen con porcentajes")
         generar = st.form_submit_button("Generar informe", type="primary")
 
     datos = {v: cargar(v, desde, hasta) for v in elegidos}
@@ -406,7 +409,7 @@ if elegidos:
             if d.empty:
                 vacios.append(etiquetas[fila["video_id"]])
                 continue
-            sel = informe.seleccionar(d, por_tipo, neutros)
+            sel = informe.seleccionar(d, None if todos else por_tipo, neutros)
             bloques.append(informe.bloque(sel, fila["Página"], fila["Plataforma"], fila["Link"],
                                           informe.resumen(d) if con_resumen else None))
         st.session_state["texto_informe"] = informe.unir(bloques) if bloques else None

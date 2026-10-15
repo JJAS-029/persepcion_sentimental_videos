@@ -14,13 +14,19 @@ import pandas as pd
 ICONOS = {"POS": "🟢", "NEG": "🔴", "NEU": "⚪"}
 
 
-def seleccionar(df: pd.DataFrame, por_tipo: int, incluir_neutros: bool = False) -> pd.DataFrame:
-    """Los comentarios más claros de cada tipo (mayor probabilidad), sin repetidos ni mensajes vacíos."""
+def seleccionar(df: pd.DataFrame, por_tipo: int | None, incluir_neutros: bool = False) -> pd.DataFrame:
+    """Comentarios para el informe, agrupados por tipo y en orden de hora.
+
+    por_tipo=N: los N más claros de cada tipo (mayor probabilidad), sin repetidos ni mensajes de puro emoji.
+    por_tipo=None: todos los comentarios de cada tipo, sin filtrar.
+    """
+    tipos = [("POS", "p_pos"), ("NEG", "p_neg")] + ([("NEU", "p_neu")] if incluir_neutros else [])
+    if por_tipo is None:
+        return pd.concat([df[df["sentimiento"] == s].sort_values("hora") for s, _ in tipos])
     d = df.copy()
     d["_norm"] = d["mensaje"].str.lower().str.replace(r"\s+", " ", regex=True).str.strip()
     d = d[d["_norm"].str.count(r"[a-záéíóúñü]") >= 8]          # descarta solo emojis / "hola"
     d = d.drop_duplicates("_norm")
-    tipos = [("POS", "p_pos"), ("NEG", "p_neg")] + ([("NEU", "p_neu")] if incluir_neutros else [])
     bloques = [d[d["sentimiento"] == s].nlargest(por_tipo, p).sort_values("hora") for s, p in tipos]
     return pd.concat(bloques).drop(columns="_norm")
 
